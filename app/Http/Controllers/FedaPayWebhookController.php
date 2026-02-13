@@ -31,6 +31,12 @@ class FedaPayWebhookController extends Controller
         $expectedSignature = $fedapay->computeExpectedSignature($signature, $payload);
         $secret = config('fedapay.webhook_secret');
 
+        Log::info('fedapay.webhook_signature_check', [
+            'has_signature' => (bool) $signature,
+            'has_secret' => (bool) $secret,
+            'signature_preview' => $signature ? substr($signature, 0, 50) . '...' : null,
+        ]);
+
         if (!$fedapay->verifyWebhook($signature, $payload)) {
             Log::warning('fedapay.invalid_signature', [
                 'received_signature' => $signature,
@@ -40,7 +46,15 @@ class FedaPayWebhookController extends Controller
             return response()->json(['message' => 'invalid signature'], 400);
         }
 
+        Log::info('fedapay.webhook_signature_valid');
+
         $payloadArray = $request->all();
+
+        // Log du payload pour déboguer
+        Log::info('fedapay.webhook_payload', [
+            'event' => data_get($payloadArray, 'event') ?? data_get($payloadArray, 'type') ?? 'unknown',
+            'status' => data_get($payloadArray, 'data.status') ?? data_get($payloadArray, 'status') ?? 'unknown',
+        ]);
 
         $orderReference = data_get($payloadArray, 'metadata.order_reference')
             ?? data_get($payloadArray, 'data.metadata.order_reference')
@@ -131,15 +145,34 @@ class FedaPayWebhookController extends Controller
         $event = strtolower((string) ($request->input('event') ?? $request->input('type')));
         $status = strtolower((string) ($request->input('data.status') ?? $request->input('status')));
 
+        Log::info('fedapay.webhook_order_found', [
+            'order_id' => $order->id,
+            'order_reference' => $order->reference,
+            'order_status' => $order->status,
+            'event' => $event,
+            'fedapay_status' => $status,
+        ]);
+
         $shouldMarkPaid = str_contains($event, 'transaction.paid')
             || in_array($status, ['approved', 'completed', 'paid'], true);
 
+        Log::info('fedapay.webhook_decision', [
+            'should_mark_paid' => $shouldMarkPaid,
+            'event_contains_paid' => str_contains($event, 'transaction.paid'),
+            'status_is_paid' => in_array($status, ['approved', 'completed', 'paid'], true),
+        ]);
+
         if ($shouldMarkPaid) {
             if ($order->status !== Order::STATUS_PAID) {
+                Log::info('fedapay.webhook_marking_paid', ['order_id' => $order->id]);
                 $order->markAsPaid($request->all());
                 $fulfillment->send($order);
+                Log::info('fedapay.webhook_fulfillment_sent', ['order_id' => $order->id]);
+            } else {
+                Log::info('fedapay.webhook_already_paid', ['order_id' => $order->id]);
             }
         } elseif (in_array($status, ['canceled', 'declined', 'failed'], true)) {
+            Log::info('fedapay.webhook_marking_failed', ['order_id' => $order->id]);
             $order->update([
                 'status' => Order::STATUS_FAILED,
                 'payment_payload' => $request->all(),
@@ -149,6 +182,11 @@ class FedaPayWebhookController extends Controller
                 $order->chat_id,
                 sprintf('Le paiement de la commande %s a echoue. Tu peux relancer /shop pour reessayer.', $order->reference)
             );
+        } else {
+            Log::info('fedapay.webhook_no_action', [
+                'order_id' => $order->id,
+                'reason' => 'Status not actionable',
+            ]);
         }
 
         return response()->json(['message' => 'ok']);
