@@ -1,0 +1,125 @@
+name: Deploy to Hostinger - PRODUCTION
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_PATH: ~/domains/bot.faustinagh.me
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, dom, filter, gd, json, zip
+        coverage: none
+
+    - name: Cache Composer dependencies
+      uses: actions/cache@v3
+      with:
+        path: vendor
+        key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-composer-
+
+    - name: Install Composer dependencies
+      run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+    - name: Set writable permissions
+      run: chmod -R 775 storage bootstrap/cache
+
+    - name: Validate required secrets
+      run: |
+        echo "🔍 Vérification des secrets requis pour HOSTINGER"
+        if [ -z "${{ secrets.SSH_PRIVATE_KEY_FAUSTIN }}" ]; then echo "❌ Manquant : SSH_PRIVATE_KEY_FAUSTIN"; exit 1; fi
+        if [ -z "${{ secrets.SSH_HOST_FAUSTIN }}" ]; then echo "❌ Manquant : SSH_HOST_FAUSTIN"; exit 1; fi
+        if [ -z "${{ secrets.SSH_USER_FAUSTIN }}" ]; then echo "❌ Manquant : SSH_USER_FAUSTIN"; exit 1; fi
+        if [ -z "${{ secrets.SSH_PORT_FAUSTIN }}" ]; then echo "❌ Manquant : SSH_PORT_FAUSTIN"; exit 1; fi
+        echo "✅ Tous les secrets sont présents"
+
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY_FAUSTIN }}" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        ssh-keyscan -p ${{ secrets.SSH_PORT_FAUSTIN }} ${{ secrets.SSH_HOST_FAUSTIN }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+    - name: Deploy project to Hostinger
+      run: |
+        echo "📤 Synchronisation vers $PROJECT_PATH"
+        rsync -az --delete \
+          -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.SSH_PORT_FAUSTIN }} -o StrictHostKeyChecking=no" \
+          --exclude '.git' \
+          --exclude '.github' \
+          --exclude 'vendor' \
+          --exclude '.env' \
+          --exclude 'storage/logs/*' \
+          --exclude 'node_modules' \
+          --exclude 'tests' \
+          ./ ${{ secrets.SSH_USER_FAUSTIN }}@${{ secrets.SSH_HOST_FAUSTIN }}:$PROJECT_PATH/
+
+    - name: Post-deploy setup
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SSH_HOST_FAUSTIN }}
+        username: ${{ secrets.SSH_USER_FAUSTIN }}
+        key: ${{ secrets.SSH_PRIVATE_KEY_FAUSTIN }}
+        port: ${{ secrets.SSH_PORT_FAUSTIN }}
+        script: |
+          set -e
+          PROJECT_PATH=${{ env.PROJECT_PATH }}
+          echo "🔧 Configuration distante"
+          cd $PROJECT_PATH
+
+          echo "📦 Installation des dépendances"
+          composer install --no-dev --optimize-autoloader --no-interaction || true
+
+          echo "🧹 Nettoyage caches"
+          php artisan config:clear || true
+          php artisan route:clear || true
+          php artisan view:clear || true
+          php artisan cache:clear || true
+          php artisan optimize:clear || true
+
+          echo "⚡ Mise en cache"
+          php artisan config:cache || true
+          php artisan route:cache || true
+          php artisan view:cache || true
+          php artisan optimize || true
+
+          echo "🔗 Liens de stockage"
+          rm -f public/storage
+          ln -s $PROJECT_PATH/storage/app/public $PROJECT_PATH/public/storage || true
+
+          echo "📁 Permissions"
+          chmod -R 775 storage bootstrap/cache || true
+
+          echo "🌐 Pointage public_html -> public"
+          cd $PROJECT_PATH
+          if [ -L "public_html" ]; then
+            rm public_html
+          elif [ -d "public_html" ]; then
+            mv public_html public_html.backup_$(date +%Y%m%d_%H%M%S)
+          fi
+          ln -s $PROJECT_PATH/public public_html
+
+          echo "✅ Post-déploiement terminé"
+
+    - name: Déploiement terminé
+      if: ${{ success() }}
+      run: |
+        echo "🎉 Déploiement réussi sur https://bot.faustinagh.me"
+
+    - name: Déploiement échoué
+      if: ${{ failure() }}
+      run: |
+        echo "❌ Le déploiement a échoué" && exit 1
