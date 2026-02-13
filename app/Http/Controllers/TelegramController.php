@@ -27,6 +27,11 @@ class TelegramController extends Controller
         $update = $request->all();
         Log::info('telegram.update', $update);
 
+        // Gestion des clics sur les boutons inline
+        if (data_get($update, 'callback_query')) {
+            return $this->handleCallbackQuery($update);
+        }
+
         $message = trim((string) data_get($update, 'message.text', ''));
         $chatId = (string) data_get($update, 'message.chat.id');
         $username = data_get($update, 'message.chat.username');
@@ -75,19 +80,60 @@ class TelegramController extends Controller
         $session->update(['state' => null, 'payload' => null]);
 
         $text = implode("\n", [
-            'Bienvenue dans la boutique 🚀',
-            'Envie de produits digitaux prêts à livrer ? Utilise les commandes ci-dessous :',
-            '/shop — Voir les produits',
-            '/status — Voir ta dernière commande',
+            '🚀 *Bienvenue dans la boutique !*',
+            '',
+            'Achète des produits digitaux et reçois-les instantanément sur Telegram.',
+            '',
+            'Clique sur un bouton ci-dessous pour commencer :',
         ]);
 
-        $this->bot->sendMessage($chatId, $text);
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '🛒 Voir la boutique', 'callback_data' => 'action:shop'],
+                ],
+                [
+                    ['text' => '📋 Mes commandes', 'callback_data' => 'action:status'],
+                ],
+            ],
+        ];
+
+        $this->bot->sendMessage($chatId, $text, [
+            'parse_mode' => 'Markdown',
+            'reply_markup' => json_encode($keyboard),
+        ]);
     }
 
     private function handleShop(TelegramSession $session, string $chatId): void
     {
-        $session->update(['state' => TelegramSession::STATE_AWAITING_PRODUCT]);
+        $session->update(['state' => null]);
         $this->sendProductList($chatId);
+    }
+
+    private function handleCallbackQuery(array $update): \Illuminate\Http\JsonResponse
+    {
+        $callbackQuery = data_get($update, 'callback_query');
+        $callbackId = (string) data_get($callbackQuery, 'id');
+        $chatId = (string) data_get($callbackQuery, 'message.chat.id');
+        $username = data_get($callbackQuery, 'from.username');
+        $data = (string) data_get($callbackQuery, 'data');
+
+        $this->bot->answerCallbackQuery($callbackId);
+
+        if (str_starts_with($data, 'buy:')) {
+            $slug = substr($data, 4);
+            $session = TelegramSession::firstOrCreate(
+                ['chat_id' => $chatId],
+                ['username' => $username, 'locale' => 'fr']
+            );
+            $this->handlePurchaseCommand($chatId, $slug, $session, $username);
+        } elseif (str_starts_with($data, 'status:') || $data === 'action:status') {
+            $this->sendLatestOrderStatus($chatId);
+        } elseif ($data === 'action:shop') {
+            $this->sendProductList($chatId);
+        }
+
+        return response()->json(['status' => 'callback_handled']);
     }
 
     private function splitCommand(string $message): array
@@ -108,18 +154,32 @@ class TelegramController extends Controller
             return;
         }
 
-        $lines = $products->map(function (Product $product, int $index) {
-            return sprintf(
-                "%d. *%s* — %s\n/buy %s",
-                $index + 1,
-                $product->name,
-                $product->price_label,
-                $product->slug
-            );
-        });
+        $this->bot->sendMessage($chatId, "🛒 *Boutique* — Choisis un produit :", ['parse_mode' => 'Markdown']);
 
-        $text = "Voici les produits disponibles :\n\n".implode("\n\n", $lines->toArray());
-        $this->bot->sendMessage($chatId, $text, ['parse_mode' => 'Markdown']);
+        foreach ($products as $product) {
+            $text = sprintf(
+                "*%s*\n%s\n\n💰 *%s*",
+                $product->name,
+                $product->description ?? 'Produit digital prêt à livrer.',
+                $product->price_label
+            );
+
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' => '🛒 Acheter maintenant',
+                            'callback_data' => 'buy:' . $product->slug,
+                        ],
+                    ],
+                ],
+            ];
+
+            $this->bot->sendMessage($chatId, $text, [
+                'parse_mode' => 'Markdown',
+                'reply_markup' => json_encode($keyboard),
+            ]);
+        }
     }
 
     private function handlePurchaseCommand(string $chatId, ?string $argument, TelegramSession $session, ?string $username): void
@@ -179,13 +239,35 @@ class TelegramController extends Controller
         $session->update(['state' => null]);
 
         $text = sprintf(
-            "Commande *%s* créée ✅\nMontant : %s\n\nPayer maintenant 👉 %s\n\nTu recevras automatiquement ton fichier après validation.",
+            "✅ *Commande créée*\n\n📦 Produit : *%s*\n💰 Montant : *%s*\n🔖 Référence : `%s`\n\nClique sur le bouton ci-dessous pour payer. Tu recevras ton fichier automatiquement après validation.",
             $product->name,
             $order->amount_label,
-            $order->payment_url ?? 'Lien non disponible'
+            $order->reference
         );
 
-        $this->bot->sendMessage($chatId, $text, ['parse_mode' => 'Markdown']);
+        $options = ['parse_mode' => 'Markdown'];
+
+        if ($order->payment_url) {
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' => '💳 Payer maintenant',
+                            'url' => $order->payment_url,
+                        ],
+                    ],
+                    [
+                        [
+                            'text' => '📋 Vérifier le statut',
+                            'callback_data' => 'status:' . $order->reference,
+                        ],
+                    ],
+                ],
+            ];
+            $options['reply_markup'] = json_encode($keyboard);
+        }
+
+        $this->bot->sendMessage($chatId, $text, $options);
     }
 
     private function resolveProduct(string $input): ?Product

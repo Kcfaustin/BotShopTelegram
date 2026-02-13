@@ -54,6 +54,15 @@ class TelegramBot
         }
     }
 
+    public function answerCallbackQuery(string $callbackQueryId, string $text = ''): void
+    {
+        $payload = ['callback_query_id' => $callbackQueryId];
+        if ($text) {
+            $payload['text'] = $text;
+        }
+        $this->post('answerCallbackQuery', $payload);
+    }
+
     private function post(string $method, array $payload): void
     {
         try {
