@@ -3,15 +3,20 @@
 namespace App\Http\Controllers;
 
 use App\Models\Order;
+use App\Services\DigitalProductFulfillment;
 use App\Services\FedaPayClient;
 use App\Services\TelegramBot;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class FedaPayWebhookController extends Controller
 {
-    public function handle(Request $request, FedaPayClient $fedapay, TelegramBot $bot)
+    public function handle(
+        Request $request,
+        FedaPayClient $fedapay,
+        TelegramBot $bot,
+        DigitalProductFulfillment $fulfillment
+    )
     {
         $payload = $request->getContent();
         $signature = $request->header('X-FedaPay-Signature');
@@ -124,7 +129,7 @@ class FedaPayWebhookController extends Controller
         if ($shouldMarkPaid) {
             if ($order->status !== Order::STATUS_PAID) {
                 $order->markAsPaid($request->all());
-                $this->sendDigitalProduct($order, $bot);
+                $fulfillment->send($order);
             }
         } elseif (in_array($status, ['canceled', 'declined', 'failed'], true)) {
             $order->update([
@@ -139,42 +144,5 @@ class FedaPayWebhookController extends Controller
         }
 
         return response()->json(['message' => 'ok']);
-    }
-
-    private function sendDigitalProduct(Order $order, TelegramBot $bot): void
-    {
-        $product = $order->product;
-
-        if (!$product) {
-            $bot->sendMessage($order->chat_id, 'Paiement recu. Notre equipe t\'enverra ton fichier sous peu.');
-            return;
-        }
-
-        $disk = $product->file_disk ?: 'local';
-        $relativePath = $product->file_path;
-
-        if (!Storage::disk($disk)->exists($relativePath)) {
-            Log::error('fedapay.file_missing', [
-                'order_id' => $order->id,
-                'disk' => $disk,
-                'path' => $relativePath,
-            ]);
-
-            $bot->sendMessage(
-                $order->chat_id,
-                'Paiement recu mais le fichier est indisponible. Nous t\'envoyons une solution rapidement.'
-            );
-
-            return;
-        }
-
-        $absolutePath = Storage::disk($disk)->path($relativePath);
-
-        $bot->sendDocument(
-            $order->chat_id,
-            $absolutePath,
-            basename($relativePath),
-            sprintf('Merci pour ton achat ! Voici le fichier %s.', $product->name)
-        );
     }
 }

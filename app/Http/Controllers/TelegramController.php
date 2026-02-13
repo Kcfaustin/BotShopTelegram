@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\TelegramSession;
+use App\Services\DigitalProductFulfillment;
 use App\Services\FedaPayClient;
 use App\Services\TelegramBot;
 use Illuminate\Http\Request;
@@ -16,7 +17,8 @@ class TelegramController extends Controller
 {
     public function __construct(
         private readonly TelegramBot $bot,
-        private readonly FedaPayClient $fedapay
+        private readonly FedaPayClient $fedapay,
+        private readonly DigitalProductFulfillment $fulfillment
     ) {
     }
 
@@ -213,6 +215,8 @@ class TelegramController extends Controller
             return;
         }
 
+        $order = $this->refreshOrderStatusIfNeeded($order);
+
         $statusText = match ($order->status) {
             Order::STATUS_PENDING => 'en attente de paiement',
             Order::STATUS_PAID => 'payée ✅',
@@ -233,5 +237,62 @@ class TelegramController extends Controller
         }
 
         $this->bot->sendMessage($chatId, $message);
+    }
+
+    private function refreshOrderStatusIfNeeded(Order $order): Order
+    {
+        if ($order->status !== Order::STATUS_PENDING) {
+            return $order;
+        }
+
+        $snapshot = $this->fedapay->fetchTransactionSnapshot($order);
+
+        if (!$snapshot) {
+            return $order;
+        }
+
+        $updates = [];
+
+        if (!empty($snapshot['reference']) && $snapshot['reference'] !== $order->fedapay_reference) {
+            $updates['fedapay_reference'] = $snapshot['reference'];
+        }
+
+        if (!empty($snapshot['transaction_id']) && $snapshot['transaction_id'] !== $order->fedapay_transaction_id) {
+            $updates['fedapay_transaction_id'] = $snapshot['transaction_id'];
+        }
+
+        if ($updates) {
+            $order->forceFill($updates)->save();
+        }
+
+        $status = $snapshot['status'] ?? null;
+
+        if (!$status) {
+            return $order->refresh();
+        }
+
+        if (in_array($status, ['approved', 'completed', 'paid'], true)) {
+            $order->markAsPaid($snapshot['raw'] ?? $snapshot);
+            $freshOrder = $order->refresh();
+            $this->fulfillment->send($freshOrder);
+            Log::info('fedapay.status_refreshed', [
+                'order_id' => $freshOrder->id,
+                'reference' => $freshOrder->reference,
+                'source' => 'telegram_status_command',
+            ]);
+
+            return $freshOrder;
+        }
+
+        if (in_array($status, ['canceled', 'declined', 'failed'], true)) {
+            $order->update([
+                'status' => Order::STATUS_FAILED,
+                'payment_payload' => $snapshot['raw'] ?? $snapshot,
+            ]);
+
+            return $order->refresh();
+        }
+
+        return $order->refresh();
     }
 }

@@ -87,6 +87,63 @@ class FedaPayClient
         ];
     }
 
+    public function fetchTransactionSnapshot(Order $order): ?array
+    {
+        $transactionId = $order->fedapay_transaction_id;
+
+        if (!$transactionId) {
+            return null;
+        }
+
+        $response = Http::withToken(config('fedapay.secret_key'))
+            ->acceptJson()
+            ->get($this->endpoint('transactions/'.$transactionId));
+
+        if ($response->failed()) {
+            Log::warning('fedapay.transaction_lookup_failed', [
+                'order_id' => $order->id,
+                'transaction_id' => $transactionId,
+                'status' => $response->status(),
+                'body' => $response->json(),
+            ]);
+
+            return null;
+        }
+
+        $responseData = $response->json();
+        $data = $responseData['data'] ?? $responseData;
+
+        if (isset($data['v1/transaction']) && is_array($data['v1/transaction'])) {
+            $data = $data['v1/transaction'];
+        } elseif (is_array($data) && count($data) === 1) {
+            $first = reset($data);
+            if (is_array($first) && isset($first['id'])) {
+                $data = $first;
+            }
+        }
+
+        $status = data_get($data, 'status')
+            ?? data_get($data, 'transaction.status')
+            ?? data_get($responseData, 'data.transaction.status');
+
+        $reference = data_get($data, 'reference')
+            ?? data_get($data, 'entity.reference')
+            ?? data_get($data, 'transaction.reference')
+            ?? data_get($responseData, 'data.transaction.reference')
+            ?? data_get($responseData, 'entity.reference')
+            ?? $order->reference;
+
+        return [
+            'raw' => $responseData,
+            'transaction_id' => data_get($data, 'id')
+                ?? data_get($data, 'transaction.id')
+                ?? data_get($data, 'entity.id')
+                ?? $transactionId,
+            'reference' => $reference,
+            'status' => $status ? strtolower((string) $status) : null,
+        ];
+    }
+
     private function checkoutBaseUrl(): string
     {
         $mode = config('fedapay.mode', 'sandbox');
