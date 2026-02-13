@@ -18,6 +18,14 @@ class FedaPayWebhookController extends Controller
         DigitalProductFulfillment $fulfillment
     )
     {
+        // Log immédiat pour détecter si la requête arrive
+        Log::info('fedapay.webhook_received', [
+            'method' => $request->method(),
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'content_length' => strlen($request->getContent()),
+        ]);
+
         $payload = $request->getContent();
         $signature = $request->header('X-FedaPay-Signature');
         $expectedSignature = $fedapay->computeExpectedSignature($signature, $payload);
