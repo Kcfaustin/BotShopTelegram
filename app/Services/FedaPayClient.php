@@ -14,7 +14,8 @@ class FedaPayClient
             'amount' => $order->total_amount,
             'description' => sprintf('Commande %s - %s', $order->reference, $order->product->name),
             'currency' => ['iso' => $order->currency],
-            'callback_url' => config('app.url'),
+            'callback_url' => route('payment.success'),
+            'cancel_url' => route('payment.failed'),
             'notification_url' => route('fedapay.webhook', [], true),
             'customer' => [
                 'firstname' => $order->telegram_username ?? 'Telegram',
