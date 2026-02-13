@@ -131,6 +131,19 @@ class TelegramController extends Controller
             $this->sendLatestOrderStatus($chatId);
         } elseif ($data === 'action:shop') {
             $this->sendProductList($chatId);
+        } elseif ($data === 'action:history') {
+            $this->sendPaymentHistory($chatId);
+        } elseif ($data === 'action:myfiles') {
+            $this->sendPurchasedFiles($chatId);
+        } elseif (str_starts_with($data, 'resend:')) {
+            $orderId = (int) substr($data, 7);
+            $this->resendFile($chatId, $orderId);
+        } elseif ($data === 'action:menu') {
+            $session = TelegramSession::firstOrCreate(
+                ['chat_id' => $chatId],
+                ['username' => $username, 'locale' => 'fr']
+            );
+            $this->handleStart($session, $chatId);
         }
 
         return response()->json(['status' => 'callback_handled']);
@@ -376,5 +389,120 @@ class TelegramController extends Controller
         }
 
         return $order->refresh();
+    }
+
+    private function sendPaymentHistory(string $chatId): void
+    {
+        $orders = Order::where('chat_id', $chatId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get();
+
+        if ($orders->isEmpty()) {
+            $this->bot->sendMessage($chatId, "📭 Tu n'as pas encore de commandes.\n\nTape /shop pour découvrir nos produits !");
+            return;
+        }
+
+        $text = "📋 *Historique de tes paiements* (10 derniers)\n\n";
+
+        foreach ($orders as $order) {
+            $statusEmoji = match ($order->status) {
+                Order::STATUS_PAID => '✅',
+                Order::STATUS_PENDING => '⏳',
+                Order::STATUS_FAILED => '❌',
+                Order::STATUS_CANCELED => '🚫',
+                default => '❓',
+            };
+
+            $statusText = match ($order->status) {
+                Order::STATUS_PAID => 'Payé',
+                Order::STATUS_PENDING => 'En attente',
+                Order::STATUS_FAILED => 'Échoué',
+                Order::STATUS_CANCELED => 'Annulé',
+                default => $order->status,
+            };
+
+            $productName = $order->product?->name ?? 'Produit inconnu';
+            $date = $order->created_at->format('d/m/Y H:i');
+
+            $text .= sprintf(
+                "%s `%s`\n   %s — *%s*\n   %s\n\n",
+                $statusEmoji,
+                $order->reference,
+                $productName,
+                $order->amount_label,
+                $date
+            );
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '🔙 Retour au menu', 'callback_data' => 'action:menu'],
+                ],
+            ],
+        ];
+
+        $this->bot->sendMessage($chatId, $text, [
+            'parse_mode' => 'Markdown',
+            'reply_markup' => json_encode($keyboard),
+        ]);
+    }
+
+    private function sendPurchasedFiles(string $chatId): void
+    {
+        $paidOrders = Order::where('chat_id', $chatId)
+            ->where('status', Order::STATUS_PAID)
+            ->with('product')
+            ->orderByDesc('paid_at')
+            ->get();
+
+        if ($paidOrders->isEmpty()) {
+            $this->bot->sendMessage($chatId, "📭 Tu n'as pas encore de fichiers achetés.\n\nTape /shop pour découvrir nos produits !");
+            return;
+        }
+
+        $text = "📂 *Tes fichiers achetés*\n\nClique sur un bouton pour recevoir à nouveau le fichier :\n";
+
+        $buttons = [];
+
+        foreach ($paidOrders as $order) {
+            $productName = $order->product?->name ?? 'Produit';
+            $date = $order->paid_at?->format('d/m/Y') ?? $order->created_at->format('d/m/Y');
+
+            $buttons[] = [
+                [
+                    'text' => "📥 {$productName} ({$date})",
+                    'callback_data' => 'resend:' . $order->id,
+                ],
+            ];
+        }
+
+        $buttons[] = [
+            ['text' => '🔙 Retour au menu', 'callback_data' => 'action:menu'],
+        ];
+
+        $keyboard = ['inline_keyboard' => $buttons];
+
+        $this->bot->sendMessage($chatId, $text, [
+            'parse_mode' => 'Markdown',
+            'reply_markup' => json_encode($keyboard),
+        ]);
+    }
+
+    private function resendFile(string $chatId, int $orderId): void
+    {
+        $order = Order::where('id', $orderId)
+            ->where('chat_id', $chatId)
+            ->where('status', Order::STATUS_PAID)
+            ->first();
+
+        if (!$order) {
+            $this->bot->sendMessage($chatId, "❌ Commande introuvable ou non payée.");
+            return;
+        }
+
+        $this->bot->sendMessage($chatId, "📤 Envoi du fichier en cours...");
+        $this->fulfillment->send($order);
     }
 }

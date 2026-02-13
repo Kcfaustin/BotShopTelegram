@@ -63,7 +63,9 @@ jobs:
           --exclude 'vendor' \
           --exclude '.env' \
           --exclude 'storage/logs/*' \
-          --exclude 'storage/app/products' \
+          --exclude 'storage/app/private/' \
+          --exclude 'storage/app/public/' \
+          --exclude 'storage/app/products/' \
           --exclude 'node_modules' \
           --exclude 'tests' \
           ./ ${{ secrets.SSH_USER_FAUSTIN }}@${{ secrets.SSH_HOST_FAUSTIN }}:$PROJECT_PATH/
