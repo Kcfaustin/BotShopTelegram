@@ -30,6 +30,8 @@ class Order extends Model
         'paid_at',
         'delivered_at',
         'payment_payload',
+        'promo_code_id',
+        'discount_amount',
     ];
 
     protected $casts = [
@@ -37,7 +39,13 @@ class Order extends Model
         'paid_at' => 'datetime',
         'delivered_at' => 'datetime',
         'total_amount' => 'integer',
+        'discount_amount' => 'integer',
     ];
+
+    public function promoCode(): BelongsTo
+    {
+        return $this->belongsTo(PromoCode::class);
+    }
 
     public static function generateReference(): string
     {

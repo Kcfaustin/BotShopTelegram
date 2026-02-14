@@ -26,15 +26,26 @@ class TelegramBot
         $this->post('sendMessage', $payload);
     }
 
-    public function sendDocument(string $chatId, string $absolutePath, string $fileName, string $caption = ''): void
+    public function sendDocument(string $chatId, string $absolutePathOrFileId, string $fileName, string $caption = ''): void
     {
-        if (!is_file($absolutePath)) {
-            Log::error('telegram.document_missing', ['path' => $absolutePath]);
-            $this->sendMessage($chatId, 'Le fichier commande est temporairement indisponible.');
+        // Case 1: File ID (String, not a local path)
+        if (!file_exists($absolutePathOrFileId) && is_string($absolutePathOrFileId)) {
+            $this->post('sendDocument', [
+                'chat_id' => $chatId,
+                'document' => $absolutePathOrFileId,
+                'caption' => $caption,
+            ]);
             return;
         }
 
-        $handle = fopen($absolutePath, 'r');
+        // Case 2: Local File Path
+        if (!is_file($absolutePathOrFileId)) {
+            Log::error('telegram.document_missing', ['path' => $absolutePathOrFileId]);
+            $this->sendMessage($chatId, 'Le fichier est temporairement indisponible.');
+            return;
+        }
+
+        $handle = fopen($absolutePathOrFileId, 'r');
 
         try {
             Http::attach('document', $handle, $fileName)
@@ -47,6 +58,7 @@ class TelegramBot
                 'chat_id' => $chatId,
                 'error' => $e->getMessage(),
             ]);
+            throw $e; // Re-throw to handle in Job
         } finally {
             if (is_resource($handle)) {
                 fclose($handle);

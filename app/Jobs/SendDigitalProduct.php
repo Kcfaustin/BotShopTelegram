@@ -50,13 +50,39 @@ class SendDigitalProduct implements ShouldQueue
         if (!$product) {
             $bot->sendMessage(
                 $this->order->chat_id,
-                "Paiement reçu. Notre équipe t'enverra ton fichier sous peu."
+                "Paiement reçu. Notre équipe t'enverra ton fichier sous peu." 
             );
-            // Mark as delivered to prevent loop, but maybe log warning
-            $this->order->update(['delivered_at' => now()]);
+             $this->order->update(['delivered_at' => now()]);
             return;
         }
 
+        // Priority 1: Telegram File ID (Zero storage, instant send)
+        if ($product->telegram_file_id) {
+            try {
+                $bot->sendDocument(
+                    $this->order->chat_id,
+                    $product->telegram_file_id, 
+                    $product->name, // Caption
+                    sprintf('Merci pour ton achat ! Voici le fichier %s.', $product->name)
+                );
+                
+                $this->order->update(['delivered_at' => now()]);
+                Log::info('telegram.fulfillment_delivered_via_id', ['order_id' => $this->order->id]);
+                return;
+
+            } catch (\Throwable $e) {
+                Log::error('telegram.fulfillment_id_failed', [
+                    'order_id' => $this->order->id,
+                    'file_id' => $product->telegram_file_id,
+                    'error' => $e->getMessage()
+                ]);
+                // If ID fails, maybe try local file if exists?
+                // For now, let's throw to retry or fail.
+                throw $e;
+            }
+        }
+
+        // Priority 2: Local File Storage
         $disk = $product->file_disk ?: 'local';
         $relativePath = $product->file_path;
 
@@ -69,11 +95,9 @@ class SendDigitalProduct implements ShouldQueue
 
             $bot->sendMessage(
                 $this->order->chat_id,
-                "Paiement reçu mais le fichier est indisponible. Nous t'envoyons une solution rapidement."
+                "Paiement reçu mais le fichier est indisponible. Contactez le support."
             );
             
-            // Should we mark as delivered? Probably, to avoid retry spam. 
-            // Better to let admin handle manual resend.
             $this->order->update(['delivered_at' => now()]);
             return;
         }

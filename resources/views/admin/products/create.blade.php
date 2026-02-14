@@ -25,6 +25,18 @@
                     @error('price') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
                 </div>
 
+                <div class="sm:col-span-3">
+                    <label for="category_id" class="block text-sm font-medium leading-6 text-gray-900">Catégorie</label>
+                    <div class="mt-2">
+                        <select id="category_id" name="category_id" class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:max-w-xs sm:text-sm sm:leading-6">
+                            <option value="">Aucune</option>
+                            @foreach($categories as $category)
+                                <option value="{{ $category->id }}" {{ old('category_id') == $category->id ? 'selected' : '' }}>{{ $category->name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                </div>
+
                 <div class="col-span-full">
                     <label for="description" class="block text-sm font-medium leading-6 text-gray-900">Description</label>
                     <div class="mt-2">
@@ -33,7 +45,15 @@
                 </div>
 
                 <div class="col-span-full">
-                    <label for="file" class="block text-sm font-medium leading-6 text-gray-900">Fichier à livrer</label>
+                    <label for="telegram_file_id" class="block text-sm font-medium leading-6 text-gray-900">ID Fichier Telegram (pour les gros fichiers)</label>
+                    <div class="mt-2">
+                        <input type="text" name="telegram_file_id" id="telegram_file_id" value="{{ old('telegram_file_id') }}" class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6">
+                    </div>
+                    <p class="mt-2 text-sm text-gray-500">Utilisez ceci SI le fichier est trop lourd (> 50Mo). Envoyez le fichier au bot admin pour obtenir son ID.</p>
+                </div>
+
+                <div class="col-span-full">
+                    <label for="file" class="block text-sm font-medium leading-6 text-gray-900">OU Téléverser un fichier (max 50Mo)</label>
                     <div class="mt-2 flex justify-center rounded-lg border border-dashed border-gray-900/25 px-6 py-10">
                         <div class="text-center">
                             <svg class="mx-auto h-12 w-12 text-gray-300" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -42,7 +62,7 @@
                             <div class="mt-4 flex text-sm leading-6 text-gray-600">
                                 <label for="file" class="relative cursor-pointer rounded-md bg-white font-semibold text-indigo-600 focus-within:outline-none focus-within:ring-2 focus-within:ring-indigo-600 focus-within:ring-offset-2 hover:text-indigo-500">
                                     <span>Téléverser un fichier</span>
-                                    <input id="file" name="file" type="file" class="sr-only" required>
+                                    <input id="file" name="file" type="file" class="sr-only">
                                 </label>
                                 <p class="pl-1">ou glisser-déposer</p>
                             </div>
@@ -51,6 +71,7 @@
                         </div>
                     </div>
                      @error('file') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+                     @error('telegram_file_id') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
                 </div>
 
                 <div class="col-span-full">

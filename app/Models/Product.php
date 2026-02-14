@@ -15,7 +15,9 @@ class Product extends Model
         'description',
         'price',
         'currency',
+        'category_id',
         'file_path',
+        'telegram_file_id',
         'file_disk',
         'is_active',
         'extras',
@@ -25,6 +27,11 @@ class Product extends Model
         'is_active' => 'boolean',
         'extras' => 'array',
     ];
+
+    public function category()
+    {
+        return $this->belongsTo(Category::class);
+    }
 
     public function scopeActive($query)
     {

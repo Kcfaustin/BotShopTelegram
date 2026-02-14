@@ -38,6 +38,7 @@ return [
     'telegram' => [
         'token' => env('TELEGRAM_TOKEN'),
         'webhook_secret' => env('TELEGRAM_WEBHOOK_SECRET'),
+        'support_username' => env('TELEGRAM_SUPPORT_USERNAME', 'YourUsername'),
     ],
 
 ];

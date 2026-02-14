@@ -18,7 +18,8 @@ class ProductController extends Controller
 
     public function create()
     {
-        return view('admin.products.create');
+        $categories = \App\Models\Category::all();
+        return view('admin.products.create', compact('categories'));
     }
 
     public function store(Request $request)
@@ -27,17 +28,20 @@ class ProductController extends Controller
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
-            'file' => 'required|file',
+            'file' => 'required_without:telegram_file_id|file',
+            'telegram_file_id' => 'required_without:file|nullable|string',
             'is_active' => 'boolean',
+            'category_id' => 'nullable|exists:categories,id',
         ]);
 
-        $path = $request->file('file')->store('products');
-
-        $data = $request->only(['name', 'description', 'price']);
+        $data = $request->only(['name', 'description', 'price', 'category_id', 'telegram_file_id']);
         $data['slug'] = Str::slug($data['name']);
-        $data['file_path'] = $path;
-        $data['file_disk'] = config('filesystems.default');
+        $data['files_disk'] = config('filesystems.default');
         $data['is_active'] = $request->boolean('is_active');
+
+        if ($request->hasFile('file')) {
+            $data['file_path'] = $request->file('file')->store('products');
+        }
 
         Product::create($data);
 
@@ -46,7 +50,8 @@ class ProductController extends Controller
 
     public function edit(Product $product)
     {
-        return view('admin.products.edit', compact('product'));
+        $categories = \App\Models\Category::all();
+        return view('admin.products.edit', compact('product', 'categories'));
     }
 
     public function update(Request $request, Product $product)
@@ -56,10 +61,12 @@ class ProductController extends Controller
             'description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
             'file' => 'nullable|file',
+            'telegram_file_id' => 'nullable|string',
             'is_active' => 'boolean',
+            'category_id' => 'nullable|exists:categories,id',
         ]);
 
-        $data = $request->only(['name', 'description', 'price']);
+        $data = $request->only(['name', 'description', 'price', 'category_id', 'telegram_file_id']);
         $data['slug'] = Str::slug($data['name']);
         $data['is_active'] = $request->boolean('is_active');
 

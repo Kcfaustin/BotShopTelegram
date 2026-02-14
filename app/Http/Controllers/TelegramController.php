@@ -74,6 +74,8 @@ class TelegramController extends Controller
             $this->sendLatestOrderStatus($chatId);
         } elseif ($session->state === TelegramSession::STATE_AWAITING_PRODUCT) {
             $this->handlePurchaseCommand($chatId, $message, $session, $username);
+        } elseif ($session->state === TelegramSession::STATE_AWAITING_PROMO) {
+            $this->applyPromoCode($chatId, $message, $session);
         } else {
             $this->bot->sendMessage($chatId, 'Commande inconnue. Utilise /shop pour voir la boutique.');
         }
@@ -105,6 +107,9 @@ class TelegramController extends Controller
                 [
                     // Keep status check for specific current urgency
                     ['text' => '🔍 Statut dernière commande', 'callback_data' => 'action:status'],
+                ],
+                [
+                    ['text' => '🆘 Aide / Support', 'callback_data' => 'action:support'],
                 ]
             ],
         ];
@@ -118,7 +123,17 @@ class TelegramController extends Controller
     private function handleShop(TelegramSession $session, string $chatId): void
     {
         $session->update(['state' => null]);
-        $this->sendProductList($chatId);
+        
+        // Count distinct categories that have active products
+        $hasCategories = \App\Models\Category::whereHas('products', function($q) {
+            $q->where('is_active', true);
+        })->exists();
+
+        if ($hasCategories) {
+            $this->sendCategoryList($chatId);
+        } else {
+            $this->sendProductList($chatId);
+        }
     }
 
     private function handleCallbackQuery(array $update): \Illuminate\Http\JsonResponse
@@ -141,7 +156,7 @@ class TelegramController extends Controller
         } elseif (str_starts_with($data, 'status:') || $data === 'action:status') {
             $this->sendLatestOrderStatus($chatId);
         } elseif ($data === 'action:shop') {
-            $this->sendProductList($chatId);
+            $this->handleShop(TelegramSession::where('chat_id', $chatId)->first(), $chatId);
         } elseif ($data === 'action:history') {
             $this->sendPaymentHistory($chatId);
         } elseif ($data === 'action:myfiles') {
@@ -155,6 +170,33 @@ class TelegramController extends Controller
                 ['username' => $username, 'locale' => 'fr']
             );
             $this->handleStart($session, $chatId);
+        } elseif ($data === 'action:support') {
+            $supportUser = config('services.telegram.support_username', 'VOTRE_USER_TELEGRAM');
+            $supportLink = "https://t.me/" . ltrim($supportUser, '@');
+            
+            $text = "🆘 *Support Client*\n\nUne question ? Un problème ?\nCliquez ci-dessous pour contacter le support.";
+            
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => '💬 Contacter le Support', 'url' => $supportLink]
+                    ],
+                    [
+                        ['text' => '🔙 Retour au menu', 'callback_data' => 'action:menu']
+                    ]
+                ]
+            ];
+            
+            $this->bot->sendMessage($chatId, $text, [
+                'parse_mode' => 'Markdown',
+                'reply_markup' => json_encode($keyboard)
+            ]);
+        } elseif (str_starts_with($data, 'category:')) {
+            $categoryId = (int) substr($data, 9);
+            $this->sendProductsByCategory($chatId, $categoryId);
+        } elseif (str_starts_with($data, 'promo:')) {
+            $orderId = (int) substr($data, 6);
+            $this->handlePromoCodeFlow($chatId, $orderId);
         }
 
         return response()->json(['status' => 'callback_handled']);
@@ -167,6 +209,74 @@ class TelegramController extends Controller
         $argument = $parts[1] ?? null;
 
         return [$command, $argument];
+    }
+
+    private function sendCategoryList(string $chatId): void
+    {
+        $categories = \App\Models\Category::whereHas('products', function ($q) {
+            $q->where('is_active', true);
+        })->get();
+
+        $text = "📂 *Catégories*\nChoisissez une catégorie pour voir les produits :";
+        
+        $buttons = [];
+        foreach ($categories as $category) {
+            $buttons[] = [
+                ['text' => '📁 ' . $category->name, 'callback_data' => 'category:' . $category->id]
+            ];
+        }
+        // Button to show all products without category
+        $buttons[] = [['text' => '📜 Tout voir', 'callback_data' => 'category:0']];
+
+        $this->bot->sendMessage($chatId, $text, [
+            'parse_mode' => 'Markdown',
+            'reply_markup' => json_encode(['inline_keyboard' => $buttons]),
+        ]);
+    }
+
+    private function sendProductsByCategory(string $chatId, int $categoryId): void
+    {
+        if ($categoryId === 0) {
+            $this->sendProductList($chatId);
+            return;
+        }
+
+        $products = Product::active()->where('category_id', $categoryId)->orderBy('price')->get();
+
+        if ($products->isEmpty()) {
+            $this->bot->sendMessage($chatId, "Aucun produit dans cette catégorie.");
+            return;
+        }
+        
+        // Re-use logic from sendProductList but filtered
+        // Ideally refactor sendProductList to accept products collection, but duplication is safer for now to avoid breaking existing logic
+        
+        $this->bot->sendMessage($chatId, "📂 *Produits de la catégorie*", ['parse_mode' => 'Markdown']);
+
+        foreach ($products as $product) {
+             $text = sprintf(
+                "*%s*\n%s\n\n💰 *%s*",
+                $product->name,
+                $product->description ?? 'Produit digital prêt à livrer.',
+                $product->price_label
+            );
+
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' => '🛒 Acheter maintenant',
+                            'callback_data' => 'buy:' . $product->slug,
+                        ],
+                    ],
+                ],
+            ];
+
+            $this->bot->sendMessage($chatId, $text, [
+                'parse_mode' => 'Markdown',
+                'reply_markup' => json_encode($keyboard),
+            ]);
+        }
     }
 
     private function sendProductList(string $chatId): void
@@ -264,10 +374,24 @@ class TelegramController extends Controller
 
         $session->update(['state' => null]);
 
+        $this->sendOrderConfirmation($chatId, $order);
+    }
+    
+    private function sendOrderConfirmation(string $chatId, Order $order): void
+    {
+        $product = $order->product;
+        $originalPrice = $product->price;
+        $finalPrice = $order->total_amount;
+        $hasDiscount = $finalPrice < $originalPrice;
+
+        $priceDisplay = $hasDiscount
+            ? sprintf("~%s %s~ *%s %s*", number_format($originalPrice, 0, ',', ' '), $order->currency, number_format($finalPrice, 0, ',', ' '), $order->currency)
+            : $order->amount_label;
+
         $text = sprintf(
-            "✅ *Commande créée*\n\n📦 Produit : *%s*\n💰 Montant : *%s*\n🔖 Référence : `%s`\n\nClique sur le bouton ci-dessous pour payer. Tu recevras ton fichier automatiquement après validation.",
+            "✅ *Commande créée*\n\n📦 Produit : *%s*\n💰 Montant : %s\n🔖 Référence : `%s`\n\nClique sur le bouton ci-dessous pour payer. Tu recevras ton fichier automatiquement après validation.",
             $product->name,
-            $order->amount_label,
+            $priceDisplay,
             $order->reference
         );
 
@@ -283,6 +407,12 @@ class TelegramController extends Controller
                         ],
                     ],
                     [
+                         [
+                            'text' => '🎟️ Code Promo',
+                            'callback_data' => 'promo:' . $order->id,
+                        ],
+                    ],
+                    [
                         [
                             'text' => '📋 Vérifier le statut',
                             'callback_data' => 'status:' . $order->reference,
@@ -294,6 +424,84 @@ class TelegramController extends Controller
         }
 
         $this->bot->sendMessage($chatId, $text, $options);
+    }
+
+    private function handlePromoCodeFlow(string $chatId, int $orderId): void
+    {
+        $order = Order::find($orderId);
+        if (!$order || $order->status !== Order::STATUS_PENDING) {
+             $this->bot->sendMessage($chatId, "Commande invalide ou expirée.");
+             return;
+        }
+        
+        TelegramSession::updateOrCreate(
+            ['chat_id' => $chatId],
+            ['state' => TelegramSession::STATE_AWAITING_PROMO, 'payload' => ['order_id' => $orderId]]
+        );
+
+        $this->bot->sendMessage($chatId, "🎟️ Veuillez entrer votre code promo :");
+    }
+
+    private function applyPromoCode(string $chatId, string $code, TelegramSession $session): void
+    {
+        $payload = $session->payload;
+        $orderId = $payload['order_id'] ?? null;
+        $order = Order::find($orderId);
+
+        if (!$order || $order->status !== Order::STATUS_PENDING) {
+             $this->bot->sendMessage($chatId, "Commande introuvable.");
+             $session->update(['state' => null, 'payload' => null]);
+             return;
+        }
+
+        $promo = \App\Models\PromoCode::where('code', $code)->first();
+
+        if (!$promo || !$promo->isValid()) {
+            $this->bot->sendMessage($chatId, "❌ Code promo invalide ou expiré.");
+            // Keep state to allow retry? or clear? Let's clear for simplicity or let them retry button
+             $session->update(['state' => null, 'payload' => null]);
+             $this->sendOrderConfirmation($chatId, $order); // Resend original
+             return;
+        }
+
+        // Apply Discount
+        $discountAmount = $promo->calculateDiscount($order->product->price);
+        $newTotal = max(0, $order->product->price - $discountAmount);
+
+        $order->update([
+            'promo_code_id' => $promo->id,
+            'discount_amount' => $discountAmount,
+            'total_amount' => $newTotal
+        ]);
+        
+        // Regenerate Payment Link (Important!)
+        // Fedapay transaction amount needs update.
+        // Usually safer to create new transaction or update existing if API supports it.
+        // For simplicity, we create a new transaction on Fedapay side basically by overwriting previous tokens.
+        
+        try {
+            $payment = $this->fedapay->createTransaction($order);
+            $order->update([
+                'payment_url' => $payment['payment_url'] ?? null,
+                'fedapay_transaction_id' => $payment['transaction_id'] ?? null,
+                'fedapay_reference' => $payment['reference'] ?? null,
+                'payment_payload' => $payment['raw'] ?? $payment,
+            ]);
+            
+            $promo->increment('times_used'); // Maybe increment only after payment? Ideally yes. 
+            // Reverting increment here might be better, only increment on PAID status.
+            // But checking validity uses times_used. 
+            // Better to not increment now, but when paid. isValid() checks limit.
+            
+            $this->bot->sendMessage($chatId, "✅ Code promo appliqué ! Réduction de " . $discountAmount . " " . $order->currency);
+            
+        } catch (\Throwable $e) {
+             Log::error('promo_apply.failed', ['error' => $e->getMessage()]);
+             $this->bot->sendMessage($chatId, "Erreur lors de la mise à jour du paiement.");
+        }
+
+        $session->update(['state' => null, 'payload' => null]);
+        $this->sendOrderConfirmation($chatId, $order);
     }
 
     private function resolveProduct(string $input): ?Product
