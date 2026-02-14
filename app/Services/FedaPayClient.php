@@ -21,7 +21,7 @@ class FedaPayClient
             'customer' => [
                 'firstname' => $order->telegram_username ?? 'Telegram',
                 'lastname' => $order->product->slug,
-                'email' => 'businessclub93@gmail.com',
+                'email' => config('mail.from.address', 'businessclub93@gmail.com'),
             ],
             'metadata' => [
                 'order_reference' => $order->reference,

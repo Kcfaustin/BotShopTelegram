@@ -24,6 +24,12 @@ class TelegramController extends Controller
 
     public function handle(Request $request)
     {
+        $secretToken = $request->header('X-Telegram-Bot-Api-Secret-Token');
+        if ($secretToken !== config('services.telegram.webhook_secret')) {
+            Log::warning('telegram.webhook_unauthorized', ['ip' => $request->ip()]);
+            return response()->json(['status' => 'forbidden'], 403);
+        }
+
         $update = $request->all();
         Log::info('telegram.update', $update);
 
@@ -230,6 +236,8 @@ class TelegramController extends Controller
                 'order_id' => $order->id,
                 'error' => $exception->getMessage(),
             ]);
+
+            $order->update(['status' => Order::STATUS_FAILED]);
 
             $this->bot->sendMessage($chatId, 'Impossible de générer le lien de paiement. Réessaie dans quelques minutes.');
             return;
@@ -503,6 +511,6 @@ class TelegramController extends Controller
         }
 
         $this->bot->sendMessage($chatId, "📤 Envoi du fichier en cours...");
-        $this->fulfillment->send($order);
+        $this->fulfillment->send($order, true);
     }
 }

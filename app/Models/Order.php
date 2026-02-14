@@ -28,12 +28,14 @@ class Order extends Model
         'fedapay_transaction_id',
         'fedapay_reference',
         'paid_at',
+        'delivered_at',
         'payment_payload',
     ];
 
     protected $casts = [
         'payment_payload' => 'array',
         'paid_at' => 'datetime',
+        'delivered_at' => 'datetime',
         'total_amount' => 'integer',
     ];
 
