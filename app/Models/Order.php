@@ -69,5 +69,9 @@ class Order extends Model
             'paid_at' => now(),
             'payment_payload' => $payload ?: $this->payment_payload,
         ])->save();
+
+        if ($this->promo_code_id) {
+            PromoCode::where('id', $this->promo_code_id)->increment('times_used');
+        }
     }
 }

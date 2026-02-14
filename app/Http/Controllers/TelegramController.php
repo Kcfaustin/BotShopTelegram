@@ -57,6 +57,13 @@ class TelegramController extends Controller
             'last_message_at' => now(),
         ])->save();
 
+        if ($document = data_get($update, 'message.document')) {
+            $fileId = data_get($document, 'file_id');
+            $fileName = data_get($document, 'file_name', 'Fichier');
+            $this->bot->sendMessage($chatId, "📂 *Fichier Reçu* : {$fileName}\n\n🆔 ID à copier dans l'admin :\n`{$fileId}`", ['parse_mode' => 'Markdown']);
+            return response()->json(['status' => 'file_id_sent']);
+        }
+
         if ($message === '') {
             $this->bot->sendMessage($chatId, "Je n'ai pas compris ton message. Tape /shop pour commencer.");
             return response()->json(['status' => 'empty']);
@@ -227,6 +234,7 @@ class TelegramController extends Controller
         }
         // Button to show all products without category
         $buttons[] = [['text' => '📜 Tout voir', 'callback_data' => 'category:0']];
+        $buttons[] = [['text' => '🏠 Menu Principal', 'callback_data' => 'action:menu']];
 
         $this->bot->sendMessage($chatId, $text, [
             'parse_mode' => 'Markdown',
@@ -269,6 +277,9 @@ class TelegramController extends Controller
                             'callback_data' => 'buy:' . $product->slug,
                         ],
                     ],
+                    [
+                        ['text' => '🏠 Menu Principal', 'callback_data' => 'action:menu']
+                    ],
                 ],
             ];
 
@@ -305,6 +316,9 @@ class TelegramController extends Controller
                             'text' => '🛒 Acheter maintenant',
                             'callback_data' => 'buy:' . $product->slug,
                         ],
+                    ],
+                    [
+                        ['text' => '🏠 Menu Principal', 'callback_data' => 'action:menu']
                     ],
                 ],
             ];
@@ -418,6 +432,9 @@ class TelegramController extends Controller
                             'callback_data' => 'status:' . $order->reference,
                         ],
                     ],
+                    [
+                        ['text' => '🏠 Menu Principal', 'callback_data' => 'action:menu']
+                    ]
                 ],
             ];
             $options['reply_markup'] = json_encode($keyboard);
@@ -465,8 +482,13 @@ class TelegramController extends Controller
         }
 
         // Apply Discount
-        $discountAmount = $promo->calculateDiscount($order->product->price);
-        $newTotal = max(0, $order->product->price - $discountAmount);
+        $discountAmount = (int) $promo->calculateDiscount($order->product->price);
+        $newTotal = (int) max(0, $order->product->price - $discountAmount);
+
+        // Save original values in case of failure
+        $originalPromoId = $order->promo_code_id;
+        $originalDiscount = $order->discount_amount;
+        $originalTotal = $order->total_amount;
 
         $order->update([
             'promo_code_id' => $promo->id,
@@ -474,13 +496,11 @@ class TelegramController extends Controller
             'total_amount' => $newTotal
         ]);
         
-        // Regenerate Payment Link (Important!)
-        // Fedapay transaction amount needs update.
-        // Usually safer to create new transaction or update existing if API supports it.
-        // For simplicity, we create a new transaction on Fedapay side basically by overwriting previous tokens.
-        
         try {
+            // Generate a slightly variation of reference if needed, but usually redundant if Fedapay allows same reference in metadata.
+            // Ensure integer amount
             $payment = $this->fedapay->createTransaction($order);
+            
             $order->update([
                 'payment_url' => $payment['payment_url'] ?? null,
                 'fedapay_transaction_id' => $payment['transaction_id'] ?? null,
@@ -488,16 +508,24 @@ class TelegramController extends Controller
                 'payment_payload' => $payment['raw'] ?? $payment,
             ]);
             
-            $promo->increment('times_used'); // Maybe increment only after payment? Ideally yes. 
-            // Reverting increment here might be better, only increment on PAID status.
-            // But checking validity uses times_used. 
-            // Better to not increment now, but when paid. isValid() checks limit.
-            
+            // Only send success message if everything worked
             $this->bot->sendMessage($chatId, "✅ Code promo appliqué ! Réduction de " . $discountAmount . " " . $order->currency);
             
         } catch (\Throwable $e) {
-             Log::error('promo_apply.failed', ['error' => $e->getMessage()]);
-             $this->bot->sendMessage($chatId, "Erreur lors de la mise à jour du paiement.");
+             Log::error('promo_apply.failed', [
+                 'order_id' => $order->id,
+                 'error' => $e->getMessage(),
+                 'trace' => $e->getTraceAsString()
+             ]);
+             
+             // Revert changes so the user sees the correct (original) state
+             $order->update([
+                'promo_code_id' => $originalPromoId,
+                'discount_amount' => $originalDiscount,
+                'total_amount' => $originalTotal
+             ]);
+
+             $this->bot->sendMessage($chatId, "❌ Impossible d'appliquer la réduction (Erreur technique). Veuillez réessayer ou payer le prix normal.");
         }
 
         $session->update(['state' => null, 'payload' => null]);
@@ -551,8 +579,12 @@ class TelegramController extends Controller
         if ($order->status === Order::STATUS_PENDING && $order->payment_url) {
             $message .= "\nLien de paiement : {$order->payment_url}";
         }
+        
+        $keyboard = ['inline_keyboard' => [[['text' => '🏠 Menu Principal', 'callback_data' => 'action:menu']]]];
 
-        $this->bot->sendMessage($chatId, $message);
+        $this->bot->sendMessage($chatId, $message, [
+            'reply_markup' => json_encode($keyboard)
+        ]);
     }
 
     private function refreshOrderStatusIfNeeded(Order $order): Order
