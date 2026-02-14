@@ -99,8 +99,13 @@ class TelegramController extends Controller
                     ['text' => '🛒 Voir la boutique', 'callback_data' => 'action:shop'],
                 ],
                 [
-                    ['text' => '📋 Mes commandes', 'callback_data' => 'action:status'],
+                    ['text' => '📂 Mes Fichiers (Reçus)', 'callback_data' => 'action:myfiles'],
+                    ['text' => '📜 Historique achats', 'callback_data' => 'action:history'],
                 ],
+                [
+                    // Keep status check for specific current urgency
+                    ['text' => '🔍 Statut dernière commande', 'callback_data' => 'action:status'],
+                ]
             ],
         ];
 
