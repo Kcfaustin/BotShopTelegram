@@ -154,12 +154,13 @@ class FedaPayWebhookController extends Controller
         ]);
 
         $shouldMarkPaid = str_contains($event, 'transaction.paid')
-            || in_array($status, ['approved', 'completed', 'paid'], true);
+            || str_contains($event, 'transaction.approved')
+            || in_array($status, ['approved', 'completed', 'paid', 'successful'], true);
 
         Log::info('fedapay.webhook_decision', [
             'should_mark_paid' => $shouldMarkPaid,
-            'event_contains_paid' => str_contains($event, 'transaction.paid'),
-            'status_is_paid' => in_array($status, ['approved', 'completed', 'paid'], true),
+            'event' => $event,
+            'status' => $status,
         ]);
 
         if ($shouldMarkPaid) {
@@ -170,6 +171,9 @@ class FedaPayWebhookController extends Controller
                 Log::info('fedapay.webhook_fulfillment_sent', ['order_id' => $order->id]);
             } else {
                 Log::info('fedapay.webhook_already_paid', ['order_id' => $order->id]);
+                // Safety check: if paid but not delivered (or job lost), try sending again.
+                // The job itself has idempotency check on 'delivered_at', so this is safe.
+                $fulfillment->send($order);
             }
         } elseif (in_array($status, ['canceled', 'declined', 'failed'], true)) {
             Log::info('fedapay.webhook_marking_failed', ['order_id' => $order->id]);

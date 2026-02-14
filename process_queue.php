@@ -13,6 +13,9 @@ $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 
 echo "Processing jobs...\n";
 
+// Run scheduled tasks (like pending order checker)
+$kernel->call('schedule:run');
+
 // Queue worker with fail-safe options for shared hosting
 $status = $kernel->call('queue:work', [
     '--stop-when-empty' => true,
